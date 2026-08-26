@@ -23,6 +23,7 @@ from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel, Field
 
+from origin import config
 from origin.api import audio
 from origin.api import jobs as job_store
 from origin.api import mock
@@ -78,6 +79,34 @@ def _load_set(set_id: str) -> CandidateSet:
         raise HTTPException(
             status_code=404, detail=f"unknown candidate set '{set_id}'"
         ) from error
+
+
+def _checked_source(url: str) -> str:
+    """The input material address, or a 400. An allow-list, never a deny-list.
+
+    Two forms are accepted and nothing else: an `http(s)` address, and a path
+    to a file in the directory `config.queries_dir()` names. Anything else -
+    another scheme, and above all any other path on disk - is refused before
+    the engine sees it.
+
+    Without this the field is an unauthenticated read of any file on the
+    server: `ingest.load_clip` treats whatever is not an address as a path,
+    opens it, decodes it, and the SSE stream reports back that it existed and
+    how long it was. The path is compared only after `realpath`, so `..` and a
+    symlink pointing out of the directory end the same way as an absolute path
+    somewhere else.
+    """
+    if url.startswith(("http://", "https://")):
+        return url
+    root = os.path.realpath(config.queries_dir())
+    file = os.path.realpath(url)
+    if file != root and os.path.commonpath((root, file)) == root:
+        return file
+    raise HTTPException(
+        status_code=400,
+        detail="the address must be an http:// or https:// URL, "
+               "or a path to a file in the input material directory",
+    )
 
 
 def _engine():
@@ -136,15 +165,19 @@ async def analyze(request_body: AnalyzeRequest) -> AnalyzeResponse:
     # The real path. We load the set either way, so that a wrong name gives a
     # 404 before anything starts.
     candidate_set = _load_set(request_body.candidate_set)
+    # The allow-list runs after the set is loaded, so that a wrong set name
+    # still gives the 404 it always gave, and before the engine is imported,
+    # so that a refused address costs nothing.
+    source = _checked_source(request_body.url)
     pipeline = _engine()
     job_id = store.create(request_body.url, request_body.candidate_set)
     # We store the input material only when it is a file on disk: with an
     # address, screen E4 has nothing to play on the query side, because the
     # downloaded file lives in a temporary directory and disappears with ingest.
-    if not request_body.url.startswith(("http://", "https://")):
-        store.set_audio_path(job_id, request_body.url)
+    if not source.startswith(("http://", "https://")):
+        store.set_audio_path(job_id, source)
     store.start(job_id, pipeline.run(
-        request_body.url,
+        source,
         request_body.candidate_set,
         candidates=candidate_set.candidates,
         # The partial result lands in the store before the `verdict` event, so a

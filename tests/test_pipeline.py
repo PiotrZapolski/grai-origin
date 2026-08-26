@@ -245,8 +245,8 @@ def _stub_the_melody_transcription(monkeypatch, received):
     monkeypatch.setattr(melodic, "representation", lambda path: _melody_of((60, 62, 64, 67)))
 
 
-def _stub_the_transcript(monkeypatch, vocals):
-    """Detector D without whisper: the gate passes, and it returns `vocals`.
+def _stub_the_transcript(monkeypatch, vocals, passed=True, reason=None):
+    """Detector D without whisper: the gate answers `passed`, and it returns `vocals`.
 
     `vocals=None` is the cheap path of decision D3 - the gate passed on the
     first pass and demucs never ran, so there is nothing to share.
@@ -259,7 +259,7 @@ def _stub_the_transcript(monkeypatch, vocals):
     )
     monkeypatch.setattr(
         lyrics, "transcribe_with_gate",
-        lambda clip: lyrics.GateOutcome(transcript, True, None, vocals),
+        lambda clip: lyrics.GateOutcome(transcript, passed, reason, vocals),
     )
 
 
@@ -301,6 +301,40 @@ def test_the_vocals_separated_by_the_lyrics_pass_reach_the_melody(
     measured = _melodic_measurements(events)
     assert measured, "no candidate got a melodic measurement"
     assert all(r["used_separation"] is True for r in measured)
+    assert any(e.stage == "separation" for e in events), (
+        "demucs ran and the interface never saw the step"
+    )
+
+
+def test_the_separation_event_is_emitted_when_the_gate_rejects_the_transcript(
+    pipeline_query, pipeline_candidates, monkeypatch
+):
+    """Section 7.4: the gated path is exactly the path the shared separation exists for.
+
+    Demucs runs, the gate still rejects the transcript, and the envelope then
+    carries only `skipped` results with `used_separation=False`. Deciding from
+    those results meant the step that cost 391 s and produced the vocal track
+    the melody is about to use never appeared in the stream at all.
+    """
+    import numpy as np
+
+    vocals = np.linspace(-0.5, 0.5, 2048, dtype=np.float32)
+    received: list = []
+    _stub_the_transcript(monkeypatch, vocals, passed=False, reason="asr_confidence")
+    _stub_the_melody_transcription(monkeypatch, received)
+
+    _, events = _run(pipeline_query, pipeline_candidates)
+
+    transcript = next(
+        e for e in events if e.stage == "transcript" and e.status != "running"
+    )
+    assert transcript.status == "gated", "this test is not exercising the gated path"
+    assert any(e.stage == "separation" for e in events), (
+        "the gate rejected the transcript and the separation step vanished with it"
+    )
+    assert received and received[0] is vocals, (
+        "the melody did not get the vocal track the separation produced"
+    )
 
 
 def test_without_separation_the_melody_reads_the_mix_and_says_so(

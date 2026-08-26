@@ -85,11 +85,31 @@ def test_different_text_gives_a_low_jaccard():
 
 
 def test_matched_spans_carry_the_times_for_highlighting_in_the_ui():
-    """Section 7.3: the user sees which words and when."""
+    """Section 7.3: the user sees how much matched and when."""
     r = ly.build_result("c1", "hello darkness", "hello darkness",
                         words=[("hello", 1.0, 1.5), ("darkness", 1.5, 2.2)])
     assert r.matched_spans
     assert "query_time" in r.matched_spans[0]
+
+
+def test_a_span_carries_a_length_not_the_words():
+    """Ruling 60: no lyric text leaves the process.
+
+    `matched_spans` travels inside the detector envelope, and the pipeline
+    dumps the whole envelope onto the public SSE stream. The two texts being
+    compared are a copyrighted recording's lyrics and a transcript of the
+    user's material, so the span reports how many characters matched and when,
+    and nothing that could be read back as words.
+    """
+    text = "hello darkness my old friend"
+    r = ly.build_result("c1", text, text)
+    assert r.matched_spans
+    for span in r.matched_spans:
+        assert not [k for k in span if k.endswith("_text")], (
+            f"a span carries text: {sorted(span)}"
+        )
+        assert span["query_len"] == len(text)
+        assert span["candidate_len"] == len(text)
 
 
 @pytest.mark.heavy

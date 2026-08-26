@@ -13,9 +13,12 @@ failed run fixes one of them while the other still reports "not recognised".
 from __future__ import annotations
 
 import errno
+import ipaddress
 import os
 import re
+import socket
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from origin import config
 from origin.errors import DownloadError
@@ -24,6 +27,7 @@ __all__ = [
     "is_url",
     "reason_from_message",
     "reason_from_exception",
+    "check_target",
     "fetch",
 ]
 
@@ -147,6 +151,80 @@ def _check_size(path: str) -> str:
     return path
 
 
+def _is_internal(address: str) -> bool:
+    """Whether this address belongs to the machine or to the network around it.
+
+    Everything the `ipaddress` module can name as not-the-public-internet:
+    private ranges, loopback, link-local (which is where the cloud metadata
+    service at 169.254.169.254 lives), reserved blocks, multicast and the
+    unspecified address.
+    """
+    ip = ipaddress.ip_address(address)
+    return bool(
+        ip.is_private
+        or ip.is_loopback
+        or ip.is_link_local
+        or ip.is_reserved
+        or ip.is_multicast
+        or ip.is_unspecified
+    )
+
+
+def _addresses(host: str) -> list[str]:
+    """Every address the name resolves to. A name that does not resolve is not fetched."""
+    try:
+        ipaddress.ip_address(host)
+    except ValueError:
+        pass
+    else:
+        return [host]
+    try:
+        resolved = socket.getaddrinfo(host, None, proto=socket.IPPROTO_TCP)
+    except OSError as error:
+        raise DownloadError(f"cannot resolve {host}: {error}", "network") from error
+    return [record[4][0] for record in resolved]
+
+
+def check_target(url: str) -> None:
+    """Refuses an address pointing at our own network, before yt_dlp is given it.
+
+    The container runs on a shared Docker network next to production services
+    and next to the cloud metadata endpoint. Without this check the analysis
+    field is a request forgery: yt_dlp fetches `http://169.254.169.254/` or
+    `http://127.0.0.1:9200/` from the inside, and the outcome - including
+    fragments of the response inside the error text - comes back on the SSE
+    stream.
+
+    **Every** address a name resolves to is checked, not just the first: a name
+    resolving to one public and one private address is a way of getting the
+    second one fetched. The scheme is checked here as well, although the API
+    layer checks it too - this is the last place before the request leaves the
+    process, and `origin.ingest` is not the only caller.
+    """
+    parts = urlsplit(url)
+    if parts.scheme not in ("http", "https"):
+        raise DownloadError(
+            f"the scheme '{parts.scheme}' is not fetched; only http and https are",
+            "blocked",
+        )
+    host = parts.hostname
+    if not host:
+        raise DownloadError(f"no host in the address {url}", "blocked")
+    addresses = _addresses(host)
+    if not addresses:
+        raise DownloadError(f"cannot resolve {host}", "network")
+    for address in addresses:
+        try:
+            internal = _is_internal(address)
+        except ValueError as error:  # an address the module cannot read at all
+            raise DownloadError(f"cannot read the address {address}: {error}", "blocked") from error
+        if internal:
+            raise DownloadError(
+                f"{host} points at {address}, an address on the internal network",
+                "blocked",
+            )
+
+
 def fetch(url: str, directory: str) -> str:
     """Downloads audio with the yt_dlp library. Not through the CLI - see section 6 step 1.
 
@@ -154,6 +232,7 @@ def fetch(url: str, directory: str) -> str:
     instead of an exit code to parse, so taken-down material can be told apart
     from throttling.
     """
+    check_target(url)
     try:
         import yt_dlp
     except ImportError as error:

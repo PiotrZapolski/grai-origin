@@ -29,6 +29,7 @@ class DownloadError(IngestError):
     postprocessing the ffmpeg cut blew up - retry without download_ranges
     missing_tool   ffmpeg or a library is missing - fix the environment, do not retry
     oversized      more than the limit was downloaded - do not retry without changing options
+    blocked        the address is not http(s) or points at our own network - never retry
     unknown        not recognised
     """
 

@@ -153,13 +153,18 @@ def decide(
     harm: HarmonicResult | None,
     mel: MelodicResult | None,
     lyr: LyricsResult | None,
-    mean_idf: float,
+    mean_idf: float | None,
     corpus: Corpus,
 ) -> Verdict:
     """The decision tree of section 9.1. The first rule satisfied wins.
 
     Every detector may be omitted (None) and every one may arrive with a status
     other than ok - that is a normal mode of operation, not a failure.
+
+    `mean_idf` of None means the commonality filter abstains: there were no
+    patterns to measure, so it says nothing about this match and nothing is
+    degraded. That is not the same as a mean IDF of zero, which is the filter
+    saying the patterns are as common as patterns get.
     """
     peak = fp.peak_ratio if fp is not None else None
     length = fp.span_length if fp is not None else None
@@ -354,6 +359,11 @@ def _with_degradation(
     """
     if verdict_class not in DEGRADABLE_CLASSES:
         return Verdict(verdict_class, layer, reasons)
+    # The filter abstains. A match whose segment yielded no patterns gives the
+    # commonality corpus nothing to be commonly-known about, and a VERSION on a
+    # two-chord loop is still a VERSION - not "a genre convention".
+    if mean_idf is None:
+        return Verdict(verdict_class, layer, reasons)
     if not should_degrade(verdict_class, mean_idf, corpus):
         return Verdict(verdict_class, layer, reasons)
     return Verdict(
@@ -372,16 +382,32 @@ def _with_degradation(
 
 @dataclass
 class RankItem:
-    """A ranking entry, limited to what the chronology rule from 9.3 needs."""
+    """A ranking entry, limited to what the chronology rule from 9.3 needs.
+
+    `verdict_class` is here for one reason: NONE has to sort below every class
+    that claims something, whatever numbers the two carry. An empty class name
+    means "not stated" and sorts on its probability alone.
+    """
 
     candidate_id: str
-    probability: float
+    probability: float | None
     published: str | None = None
+    verdict_class: str = ""
 
 
 def _score(item: RankItem) -> float:
-    """A missing probability lands at the end of the ranking, but does not pretend to be zero."""
-    return float("-inf") if item.probability is None else float(item.probability)
+    """NONE lands at the end of the ranking, and so does a missing probability.
+
+    A candidate we found nothing on cannot outrank one we recognised, so NONE
+    goes to the bottom no matter what its strongest measurement was: a
+    `peak_ratio` of 0.02 on an unrelated recording is not evidence of anything
+    and must not stand above a class that names what it found. Everything else
+    ranks on its raw probability, and a class without one lands next to NONE -
+    at the end, without pretending to be a zero.
+    """
+    if item.verdict_class == "NONE" or item.probability is None:
+        return float("-inf")
+    return float(item.probability)
 
 
 def _close(a: float, b: float) -> bool:

@@ -1,7 +1,25 @@
 """Decision thresholds and configuration. Section 9.2 of the specification."""
 import os
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Literal
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+# The only directory an analysis may read a local file from. `POST /api/analyze`
+# takes either an http(s) address or a path inside this directory - without that
+# limit the field is a read of any file on the server, and the SSE stream
+# reports back whether it opened and how long it was.
+DEFAULT_QUERIES_DIR = REPO_ROOT / "data" / "queries"
+
+
+def queries_dir() -> Path:
+    """The directory local input material is accepted from. ORIGIN_QUERIES_ROOT overrides it.
+
+    The same shape as `api.audio.audio_root`: one directory, configurable in
+    the deployment, resolved before anything is compared against it.
+    """
+    configured = os.environ.get("ORIGIN_QUERIES_ROOT", "").strip()
+    return Path(configured).resolve() if configured else DEFAULT_QUERIES_DIR.resolve()
 
 
 @dataclass(frozen=True)

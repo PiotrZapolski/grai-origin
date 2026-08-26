@@ -139,7 +139,14 @@ export interface LyricsResult extends DetectorResultBase {
   detector: "lyrics";
   jaccard: number | null;
   semantic_sim: number | null;
-  /** `list[dict[str, Any]]` in Python. The mock carries `query`, `candidate`, `text`. */
+  /**
+   * `list[dict[str, Any]]` in Python. One entry per common run, carrying
+   * `query_len` and `candidate_len` (character lengths), `query_time` and
+   * `idf`. The engine never sends the words themselves - lyric text is
+   * redacted to a length before the result leaves the process, because these
+   * results are dumped whole onto the public SSE stream. Only the mock still
+   * carries its own invented `query`, `candidate`, `text` shape.
+   */
   matched_spans: Array<Record<string, unknown>>;
   asr_confidence: number | null;
   language: string | null;

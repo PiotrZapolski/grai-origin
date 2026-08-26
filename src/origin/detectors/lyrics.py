@@ -532,13 +532,19 @@ def matched_spans(
     words: Sequence[tuple[str, float, float]] = (),
     idf: Callable[[Sequence[str]], float] | None = None,
 ) -> list[dict[str, Any]]:
-    """Common text runs together with their times in the query.
+    """Common text runs, measured and timed - never quoted.
 
-    This is what the highlighted lyrics view is built from: the user sees
-    **which words and when**. `query_time` is None when the transcript carried
-    no times - never [0, 0], because zero points at the start of the recording,
-    which would be a lie. `idf` is computed only when the caller supplies a
-    corpus; without it, it stays None rather than zero.
+    A span says **how long the common run was and when it happened**, not what
+    it said: `query_len` and `candidate_len` are the character lengths of the
+    two runs. The words themselves are the lyrics of a copyrighted recording
+    plus a transcript of the user's material, and both would leave the process
+    on a public SSE stream. A length and a timestamp is everything the
+    highlighted view needs, and it is not a reproduction of anything.
+
+    `query_time` is None when the transcript carried no times - never [0, 0],
+    because zero points at the start of the recording, which would be a lie.
+    `idf` is computed only when the caller supplies a corpus; without it, it
+    stays None rather than zero.
     """
     query_pairs = _pairs(query_text, words)
     query_tokens = [t for t, _ in query_pairs]
@@ -554,8 +560,8 @@ def matched_spans(
         times = [c for _, c in query_pairs[from_a:to_a] if c is not None]
         span_words = query_tokens[from_a:to_a]
         spans.append({
-            "query_text": " ".join(span_words),
-            "candidate_text": " ".join(candidate_tokens[from_b:to_b]),
+            "query_len": len(" ".join(span_words)),
+            "candidate_len": len(" ".join(candidate_tokens[from_b:to_b])),
             "query_time": [times[0][0], times[-1][1]] if times else None,
             "idf": idf(span_words) if idf is not None else None,
         })

@@ -272,6 +272,9 @@ def test_without_stub_mode_the_engine_computes_not_the_stub(monkeypatch, tmp_pat
     """
     monkeypatch.delenv("ORIGIN_MOCK", raising=False)
     monkeypatch.setenv("ORIGIN_PREWARM", "0")
+    # The input material directory, so that the path passes the allow-list on
+    # the endpoint and the run gets as far as trying to open the file.
+    monkeypatch.setenv("ORIGIN_QUERIES_ROOT", str(tmp_path))
     missing_file = str(tmp_path / "no-such-file.wav")
 
     from origin.api.app import app
@@ -295,6 +298,56 @@ def test_without_stub_mode_an_unknown_set_still_gives_a_404(monkeypatch):
         r = client.post("/api/analyze", json={"url": "/tmp/a.wav",
                                               "candidate_set": "no_such_set"})
     assert r.status_code == 404
+
+
+def _analyze_without_the_stub(monkeypatch, tmp_path, url: str):
+    """One POST /api/analyze against the real path, with the input directory at tmp_path."""
+    monkeypatch.delenv("ORIGIN_MOCK", raising=False)
+    monkeypatch.setenv("ORIGIN_PREWARM", "0")
+    monkeypatch.setenv("ORIGIN_QUERIES_ROOT", str(tmp_path))
+    from origin.api.app import app
+    with TestClient(app) as client:
+        return client.post("/api/analyze",
+                           json={"url": url, "candidate_set": "demo_01"})
+
+
+def test_a_path_outside_the_input_directory_is_refused(monkeypatch, tmp_path):
+    """Any file on disk was readable through this field, and the stream said whether it opened.
+
+    `ingest.load_clip` treats whatever is not an address as a path, so
+    `{"url": "/etc/shadow"}` made the container open the file and decode it,
+    and the SSE stream reported its existence, its duration and the sha256 of
+    the decoded signal. That is an unauthenticated file-probe oracle on a
+    machine full of production containers.
+    """
+    r = _analyze_without_the_stub(monkeypatch, tmp_path, "/etc/shadow")
+    assert r.status_code == 400
+    # The refusal must not tell the caller whether the file was there.
+    assert "shadow" not in r.text
+
+
+def test_climbing_out_of_the_input_directory_is_refused(monkeypatch, tmp_path):
+    """The comparison happens after realpath, so `..` does not get around it either."""
+    outside = tmp_path.parent / "outside.wav"
+    outside.write_bytes(b"")
+    r = _analyze_without_the_stub(
+        monkeypatch, tmp_path, str(tmp_path / ".." / "outside.wav")
+    )
+    assert r.status_code == 400
+
+
+def test_a_scheme_that_is_not_http_is_refused(monkeypatch, tmp_path):
+    """file:// and friends are not addresses we fetch, and they are not paths either."""
+    r = _analyze_without_the_stub(monkeypatch, tmp_path, "file:///etc/passwd")
+    assert r.status_code == 400
+
+
+def test_a_file_in_the_input_directory_is_accepted(monkeypatch, tmp_path):
+    """The allow-list has to let the material we do analyse through, or it is just a wall."""
+    query = tmp_path / "query.wav"
+    query.write_bytes(b"")
+    r = _analyze_without_the_stub(monkeypatch, tmp_path, str(query))
+    assert r.status_code == 200
 
 
 def test_health_says_whether_it_runs_on_stubs(client):

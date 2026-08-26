@@ -228,7 +228,7 @@ def test_a_dictionary_and_a_list_are_claims_too():
                             transform={"tempo": 1.06})
     with pytest.raises(ValidationError):
         c.LyricsResult(candidate_id="c1", status="gated", reason="x",
-                       matched_spans=[{"query_text": "a"}])
+                       matched_spans=[{"query_len": 1}])
     with pytest.raises(ValidationError):
         c.MelodicResult(candidate_id="c1", status="failed", reason="x",
                         matched_ngrams=[{"ngram": [1, 2]}])

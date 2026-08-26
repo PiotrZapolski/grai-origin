@@ -202,3 +202,71 @@ def test_a_transformed_match_is_modified_not_exact():
     )
     assert v.verdict_class == "MODIFIED"
     assert v.verdict_layer == "phonogram"
+
+
+# --- the commonality filter is allowed to have nothing to say ----------------
+
+
+class Strict:
+    """A corpus where everything looks common, so anything pushed through degrades."""
+    size = 1000
+    common_idf_threshold = 100.0
+    def idf(self, w): return 0.0
+    def document_frequency(self, w): return 900
+
+
+def test_a_version_the_filter_says_nothing_about_stays_a_version():
+    """`mean_idf=None` is the filter abstaining, and abstaining is not "common".
+
+    `harmonic.chord_sequence` merges adjacent repeats and the n-gram sizes
+    start at three, so a genuine cover whose matched segment collapses to fewer
+    than three distinct chords - a loop, a drone, a short quote - yields no
+    patterns at all. Passed on as 0.0 it fell below every possible threshold
+    and the user was told the match was "a genre convention, not a signal of
+    borrowing".
+    """
+    v = fusion.decide(_fp(peak_ratio=0.1), _h(qmax_score=0.7, coverage=0.8),
+                      None, None, None, Strict())
+    assert v.verdict_class == "VERSION"
+    assert v.verdict_layer == "work"
+
+
+def test_a_mean_idf_of_zero_still_degrades():
+    """The other half of the same rule: zero is a measurement, and it is the lowest one there is."""
+    v = fusion.decide(_fp(peak_ratio=0.1), _h(qmax_score=0.7, coverage=0.8),
+                      None, None, 0.0, Strict())
+    assert v.verdict_class == "COMMON"
+
+
+# --- every class outranks NONE ----------------------------------------------
+
+
+def test_a_recognised_class_outranks_none_whatever_the_numbers_say():
+    """A candidate we found nothing on must not sit at the top of the ranking.
+
+    EXCERPT_WORK is measured by the length of a common interval run, not by a
+    score in 0-1, so its number is small on purpose. A NONE carrying an
+    unrelated `peak_ratio` of 0.02 is not evidence of anything and cannot be
+    allowed to outrank it - `_verdict_event` reads `ranking[0]` and the headline
+    verdict on the whole run comes from there.
+    """
+    excerpt = fusion.RankItem("borrowed", 0.0, None, "EXCERPT_WORK")
+    none = fusion.RankItem("unrelated", 0.02, None, "NONE")
+    assert [x.candidate_id for x in fusion.rank([none, excerpt])] == ["borrowed", "unrelated"]
+
+
+def test_none_stays_below_even_with_the_strongest_measurement_of_all():
+    ranked = fusion.rank([
+        fusion.RankItem("none", 0.99, None, "NONE"),
+        fusion.RankItem("lyrics", 0.51, None, "LYRICS"),
+    ])
+    assert [x.candidate_id for x in ranked] == ["lyrics", "none"]
+
+
+def test_two_nones_keep_their_input_order():
+    """They are all at the bottom, so nothing left tells them apart. Stable sort, no invented order."""
+    ranked = fusion.rank([
+        fusion.RankItem("a", 0.02, None, "NONE"),
+        fusion.RankItem("b", 0.40, None, "NONE"),
+    ])
+    assert [x.candidate_id for x in ranked] == ["a", "b"]

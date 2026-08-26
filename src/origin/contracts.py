@@ -152,6 +152,13 @@ class LyricsResult(DetectorResult):
     detector: Literal["lyrics"] = "lyrics"
     jaccard: float | None = None
     semantic_sim: float | None = None
+    # One dict per common run: `query_len` and `candidate_len` (character
+    # lengths), `query_time` ([start, end] in the query, or null when the
+    # transcript carried no times) and `idf`. No lyric text - not here and not
+    # anywhere downstream. These results are dumped whole onto the public SSE
+    # stream, and the two texts being compared are a copyrighted recording's
+    # lyrics and a transcript of the user's material. A length says how much
+    # matched; it does not reproduce it.
     matched_spans: list[dict[str, Any]] = Field(default_factory=list)
     asr_confidence: float | None = None
     language: str | None = None

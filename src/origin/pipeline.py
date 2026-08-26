@@ -463,6 +463,7 @@ def _raw_probability(
     verdict_class: VerdictClass,
     fp: FingerprintResult | None,
     harm: HarmonicResult | None,
+    mel: MelodicResult | None,
     lyr: LyricsResult | None,
 ) -> float | None:
     """The raw score of the detector that decided the class. This is NOT calibration.
@@ -474,9 +475,13 @@ def _raw_probability(
     classes, `qmax_score` for the harmonic classes, `jaccard` for the lyrics
     class.
 
-    `EXCERPT_WORK` deliberately gets no number: it is decided by the length of
-    the common interval run, which does not fit in the range 0-1 and, dressed up
-    as a probability, would lie about the scale.
+    `EXCERPT_WORK` is decided by the length of the common interval run, which
+    is a count and not a score in 0-1. It is reported as that run measured
+    against the length the class requires (`EXCERPT_WORK_MIN_RUN`), capped at
+    1.0: a run at the threshold reads 1.0, a longer one no more than that. This
+    is emphatically not a probability, which is what `uncalibrated` says, but it
+    is a number, and without one the class had no place in the ranking at all -
+    a recognised melodic borrowing sank below every unrelated NONE.
 
     `NONE` gets the strongest measurement there was - not in order to claim
     anything, but so that the ranking has something to order entries that all
@@ -492,7 +497,9 @@ def _raw_probability(
     if verdict_class == "LYRICS":
         return _number(lyr, "jaccard")
     if verdict_class == "EXCERPT_WORK":
-        return None
+        run = _number(mel, "longest_common_run") or 0.0
+        longest = max(run, config.threshold("EXCERPT_WORK_MIN_RUN"))
+        return min(1.0, run / longest) if longest else 0.0
     measured = [x for x in (peak, qmax) if x is not None]
     return max(measured) if measured else None
 
@@ -534,9 +541,14 @@ def _entry(
     lyr = _ok_result(envelopes.get("lyrics"), candidate.id)
 
     _, commonality_block = _commonality_of(harm, corpus)
-    verdict = fusion.decide(fp, harm, mel, lyr, commonality_block.mean_idf or 0.0, corpus)
+    # `mean_idf` travels as None, never as 0.0: None is the commonality filter
+    # having nothing to say (the matched segment yielded no chord n-grams),
+    # while 0.0 is below every threshold and would degrade the class to COMMON.
+    # `commonality.mean_idf`'s own docstring says such a match must not go
+    # through the filter at all.
+    verdict = fusion.decide(fp, harm, mel, lyr, commonality_block.mean_idf, corpus)
     verdict_class: VerdictClass = verdict.verdict_class  # type: ignore[assignment]
-    probability = _raw_probability(verdict_class, fp, harm, lyr)
+    probability = _raw_probability(verdict_class, fp, harm, mel, lyr)
 
     return (
         RankingEntry(
@@ -571,7 +583,9 @@ def _ranking(
         entry, probability = _entry(candidate, envelopes, corpus)
         entries[candidate.id] = entry
         to_rank.append(
-            fusion.RankItem(candidate.id, probability, candidate.published)
+            fusion.RankItem(
+                candidate.id, probability, candidate.published, entry.verdict_class
+            )
         )
     ranked = []
     for number, item in enumerate(fusion.rank(to_rank), start=1):
@@ -784,11 +798,13 @@ async def run(
         "lyrics",
         lambda: DETECTORS["lyrics"].run(clip, shortlisted, separation_sink=separation),
     )
-    if any(getattr(r, "used_separation", False) for r in env_lyrics.results):
-        # The separation is done by `transcribe_with_gate` inside the detector
-        # and the pipeline learns about it only from the envelope. We put the
-        # event before the transcript, because that was the order of causes, not
-        # the order of reading.
+    if separation.vocals is not None:
+        # The sink, not the results: when the gate rejects the transcript after
+        # demucs has already run - exactly the case section 7.4 exists for - the
+        # envelope carries only `skipped` results with `used_separation=False`,
+        # while the vocal track is right here and the melody below is about to
+        # use it. We put the event before the transcript, because that was the
+        # order of causes, not the order of reading.
         yield StreamEvent(
             stage="separation", level=2, status="done",
             detail={"model": "htdemucs", "stems": ["vocals", "other"]},
