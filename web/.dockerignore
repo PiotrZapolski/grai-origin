@@ -1,0 +1,13 @@
+# Frontend build context (web/Dockerfile).
+node_modules
+.next
+dist
+# Tests are not part of the production image. We keep them out of the
+# context so `next build` doesn't type-check files production never runs.
+tests
+vitest.config.ts
+Dockerfile
+.dockerignore
+.DS_Store
+.env
+.env.*

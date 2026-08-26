@@ -1,0 +1,121 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  /*
+   * The tokens from `lib/theme.ts` transcribed into CSS variables. The rules
+   * below compute transparencies from them via `color-mix`, so that no shade of
+   * a background or a border is written into the stylesheet as a ready-made
+   * `rgba(...)`. The values come from `theme()`, so the source of truth is still
+   * `lib/theme.ts`.
+   */
+  :root {
+    --origin-bg: theme("colors.bg");
+    --origin-surface: theme("colors.surface");
+    --origin-text: theme("colors.text");
+    --origin-muted: theme("colors.muted");
+    --origin-accent: theme("colors.accent");
+
+    /* The card border and every other hairline. One value for the whole system. */
+    --origin-hairline: color-mix(in srgb, var(--origin-muted) 16%, transparent);
+  }
+
+  html,
+  body {
+    background-color: theme("colors.bg");
+    color: theme("colors.text");
+  }
+}
+
+@layer components {
+  /*
+   * The background motif: a large circle whose segment runs off the frame
+   * (section 13.1).
+   *
+   * The circle is **olive grey, never lime**. The previous version drew it with
+   * a gradient built from the accent, that is, it painted the largest element of
+   * the page lime - exactly what Global Constraint 11 forbids. Lime has to mean
+   * "best match / alert / active step", not "there is a background here".
+   *
+   * Geometry: the main ring runs off the top right corner, the echo off the
+   * bottom left. Both are a gradient and a hairline, so they scale with the
+   * viewport and do not cost a single network request.
+   */
+  .origin-circle {
+    position: fixed;
+    inset: 0;
+    overflow: hidden;
+    pointer-events: none;
+    z-index: 0;
+  }
+
+  .origin-circle::before,
+  .origin-circle::after {
+    content: "";
+    position: absolute;
+    border-radius: 9999px;
+  }
+
+  /* The main circle: a segment beyond the top right corner. */
+  .origin-circle::before {
+    top: -52vmax;
+    right: -38vmax;
+    width: 128vmax;
+    height: 128vmax;
+    border: 1px solid var(--origin-hairline);
+    background: radial-gradient(
+      circle at center,
+      color-mix(in srgb, var(--origin-surface) 70%, transparent) 0%,
+      color-mix(in srgb, var(--origin-surface) 28%, transparent) 48%,
+      transparent 66%
+    );
+  }
+
+  /*
+   * The echo: a line alone, with no fill. It closes the motif on the other
+   * diagonal, so that the circle is a motif and not a single blot in a corner.
+   */
+  .origin-circle::after {
+    bottom: -60vmax;
+    left: -44vmax;
+    width: 96vmax;
+    height: 96vmax;
+    border: 1px solid color-mix(in srgb, var(--origin-muted) 9%, transparent);
+  }
+
+  /*
+   * The heading in the language of the real grai.fm brand.
+   *
+   * Five properties transcribed from their `globals.css`, because none of them
+   * works without the others: the family alone gives an ordinary serif, the
+   * italic alone without weight 780 is thin and has no editorial character at
+   * all.
+   *
+   * A note on `font-stretch`: Fraunces **has no width axis** (`wdth`), it has
+   * `opsz`, `SOFT` and `WONK`. The declaration is therefore inert today and
+   * stands here purely because that is how the source on grai.fm reads - the
+   * narrowing in their headings is done by the Fraunces italic itself, not by
+   * this line. It stays, because it costs nothing and will work if the typeface
+   * ever gets such an axis.
+   *
+   * The class sits in `@layer components`, so any `text-4xl`, `text-muted` or
+   * `tracking-*` added in a component still overrides it - the size and colour
+   * of a heading stay a decision of the screen.
+   */
+  .origin-heading {
+    font-family: theme("fontFamily.display");
+    font-style: italic;
+    font-weight: 780;
+    font-stretch: 85%;
+    letter-spacing: -0.01em;
+    line-height: 1.1;
+  }
+
+  /* A rounded card, slightly lighter than the background. */
+  .origin-card {
+    background-color: var(--origin-surface);
+    border-radius: theme("borderRadius.card");
+    border: 1px solid var(--origin-hairline);
+  }
+}

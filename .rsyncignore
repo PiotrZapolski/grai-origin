@@ -1,0 +1,13 @@
+.git/
+.venv/
+.nvm/
+node_modules/
+__pycache__/
+.pytest_cache/
+.superpowers/
+data/audio/
+data/cache/
+data/corpus/
+data/calibration/
+models/
+web/.next/

@@ -1,0 +1,25 @@
+# Backend build context (Dockerfile.api). Only pyproject.toml and src/ go
+# into the image - everything else would only slow down sending the context.
+.git
+.gitignore
+.dockerignore
+.rsyncignore
+.superpowers
+.venv
+venv
+node_modules
+web
+tests
+docs
+scripts
+data
+models
+.pytest_cache
+__pycache__
+**/__pycache__
+*.pyc
+*.egg-info
+.DS_Store
+# Secrets have no business entering the image.
+.env
+.env.*

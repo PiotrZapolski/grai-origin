@@ -1,0 +1,59 @@
+# Backend GRAI ORIGIN: FastAPI under uvicorn.
+#
+# The image is built EXCLUSIVELY on the server, via `docker compose ... --build`
+# after `git clone`/`git pull`. Nothing here is delivered via rsync.
+#
+# The `heavy` group from pyproject.toml (demucs, faster-whisper, basic-pitch) is
+# NOT installed: it's several gigabytes of models and CUDA libraries, and in
+# mock mode (ORIGIN_MOCK=1) nothing calls them. We install just the project,
+# i.e. the dependencies from the [project.dependencies] section.
+
+FROM python:3.12-slim AS build
+# EXTRAS selects optional dependency groups. Empty builds the mock-capable
+# engine without models; prod passes \"heavy\" to ship whisper, demucs, basic-pitch.
+ARG EXTRAS=
+
+# Binary wheels cover the whole set (numpy, scipy, scikit-learn, numba,
+# soundfile with bundled libsndfile), so compilers are not needed.
+ENV PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PIP_NO_CACHE_DIR=1
+
+WORKDIR /build
+
+# Metadata first, then code: a change in src/ does not invalidate the pip layer.
+COPY pyproject.toml ./
+COPY src ./src
+
+# Install into a separate prefix, which we copy into the final image. This
+# way the runtime has neither the pip cache nor the build source itself.
+RUN python -m venv /opt/venv \
+    && /opt/venv/bin/pip install --upgrade pip setuptools wheel \
+    && if [ -n "${EXTRAS}" ]; then /opt/venv/bin/pip install --index-url https://download.pytorch.org/whl/cpu torch torchaudio; fi \
+    && /opt/venv/bin/pip install "."${EXTRAS:+"[${EXTRAS}]"}
+
+
+FROM python:3.12-slim AS runtime
+
+ENV PATH="/opt/venv/bin:${PATH}" \
+    PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1
+
+# Mock mode is also the default in the image: without it /api/analyze
+# responds with 503, because the engine is not yet wired into the API.
+ENV ORIGIN_MOCK=1
+
+COPY --from=build /opt/venv /opt/venv
+
+# No root. The container writes nothing to disk, jobs live in memory.
+RUN useradd --system --create-home --uid 10001 origin
+USER origin
+WORKDIR /home/origin
+
+EXPOSE 8000
+
+# One worker: the job store (JobStore) lives in process memory, so with two
+# workers the SSE stream would sometimes hit a process that doesn't know the
+# job. Without proxy-headers uvicorn wouldn't trust Caddy's headers anyway.
+CMD ["uvicorn", "origin.api.app:app", \
+     "--host", "0.0.0.0", "--port", "8000", \
+     "--workers", "1", "--proxy-headers", "--forwarded-allow-ips", "*"]

@@ -1,0 +1,68 @@
+# GRAI ORIGIN - base stack: FastAPI backend + Next.js front.
+#
+# This file alone is enough to run locally (ports exposed on
+# 127.0.0.1). In production we layer docker-compose.prod.yml on top, which
+# removes the host ports and attaches the containers to the shared Caddy
+# network:
+#
+#   docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build
+#
+# RESOURCE LIMITS ARE PART OF THIS FILE, NOT THE OVERLAY. The machine is
+# shared with dozens of containers from other projects, so the limit applies
+# even when someone brings the stack up without the production overlay. Total:
+# 1.5 cores and 1920 MB, i.e. below the ceiling of 2 cores and 2 GB. In mock
+# mode both containers compute practically nothing.
+name: grai-origin
+
+services:
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+    environment:
+      # The engine is not yet wired into the API (T22), so mock mode is the
+      # only one that returns a complete response instead of 503.
+      ORIGIN_MOCK: "1"
+      # Interval between SSE events. Zero is test pace; a live demo should
+      # see the pipeline stages arriving one after another.
+      ORIGIN_MOCK_DELAY: "0.4"
+      ORIGIN_CORS: "*"
+    cpus: 1.0
+    mem_limit: 1280m
+    ports:
+      - "127.0.0.1:8000:8000"
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - |
+          import sys, urllib.request
+          sys.exit(0 if urllib.request.urlopen("http://127.0.0.1:8000/api/health", timeout=3).status == 200 else 1)
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    restart: unless-stopped
+
+  web:
+    build:
+      context: ./web
+      dockerfile: Dockerfile
+      args:
+        # Empty = calls relative to the same origin. Front and API stand
+        # under one host; Caddy is what splits them, by the /api path.
+        NEXT_PUBLIC_API_BASE: ""
+    depends_on:
+      - api
+    cpus: 0.5
+    mem_limit: 640m
+    ports:
+      - "127.0.0.1:3000:3000"
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://127.0.0.1:3000/"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    restart: unless-stopped

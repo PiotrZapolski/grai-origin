@@ -1,0 +1,60 @@
+[project]
+name = "grai-origin"
+version = "0.1.0"
+requires-python = ">=3.11"
+dependencies = [
+  "fastapi>=0.110",
+  "uvicorn>=0.29",
+  "pydantic>=2.6",
+  "numpy>=1.26",
+  "scipy>=1.12",
+  "librosa>=0.10",
+  "soundfile>=0.12",
+  "scikit-learn>=1.4",
+  "datasketch>=1.6",
+  # yt-dlp is a production dependency, not a test one: without it load_clip(url)
+  # would raise ImportError instead of a download error with a recognizable cause.
+  "yt-dlp>=2024.1",
+]
+
+[project.optional-dependencies]
+heavy = [
+  "faster-whisper>=1.0",
+  "demucs>=4.0",
+  # The lyrics detector imports sentence-transformers for semantic_sim. It was
+  # missing from this group, so a full heavy install still left the detector
+  # reporting model_unavailable on the semantic half of the comparison.
+  "sentence-transformers>=2.2",
+  # basic-pitch is deliberately NOT here, and its runtime dependencies are.
+  # basic-pitch declares tensorflow<2.15.1 as a CORE dependency under the
+  # marker platform_system != "Darwin" and python_version >= "3.11"; the
+  # [onnx] extra only adds onnxruntime on top of it, it does not replace it.
+  # No tensorflow<2.15.1 wheel exists for Python 3.12, so pip cannot resolve
+  # this group at all with basic-pitch inside it. It is installed separately
+  # with --no-deps (see scripts/install-heavy), and everything it actually
+  # imports at inference time is listed below. onnxruntime already arrives
+  # with faster-whisper, which uses it for the Silero VAD.
+  "onnxruntime>=1.17",
+  "pretty_midi>=0.2.9",
+  "mir_eval>=0.6",
+  # basic_pitch.note_creation imports resampy at module level, so it is a
+  # hard runtime requirement of the transcription, not an optional speedup.
+  "resampy>=0.2.2,<0.4.3",
+]
+dev = ["pytest>=8.0", "pytest-asyncio>=0.23", "httpx>=0.27", "imageio-ffmpeg>=0.4"]
+
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = [".", "src"]
+markers = [
+  "heavy: requires demucs/whisper, skipped by default",
+  "integration: requires real audio from data/audio",
+]
+addopts = "-m 'not heavy' --strict-markers"

@@ -1,0 +1,60 @@
+#!/usr/bin/env bash
+# Runs tests on Hetzner. NEVER locally - see Global Constraints point 1.
+# Usage: ./scripts/rt                      (all tests)
+#        ./scripts/rt tests/test_ingest.py (single file)
+set -euo pipefail
+
+REMOTE="${ORIGIN_REMOTE:?set ORIGIN_REMOTE to your ssh host alias}"
+REMOTE_DIR="${ORIGIN_REMOTE_DIR:-/opt/grai-origin}"
+QUOTA="${ORIGIN_CPU_QUOTA:-4}"
+
+cd "$(dirname "$0")/.."
+
+ssh "${REMOTE}" "mkdir -p '${REMOTE_DIR}'"
+rsync -az --delete --exclude-from=.rsyncignore ./ "${REMOTE}:${REMOTE_DIR}/"
+
+ssh "${REMOTE}" bash -s -- "${REMOTE_DIR}" "${QUOTA}" "$@" <<'REMOTE_SCRIPT'
+set -euo pipefail
+DIR="$1"; QUOTA="$2"; shift 2
+cd "$DIR"
+
+# The quota applies to EVERYTHING we run on this machine, not just pytest.
+# Building demucs or basic-pitch wheels can hog the whole CPU for minutes.
+LAST_CPU=$((QUOTA - 1))
+THROTTLE=(nice -n 19 taskset -c "0-${LAST_CPU}")
+
+# The core quota must also apply to the numerical libraries, otherwise BLAS
+# and numba spread across all 12 logical CPUs despite taskset.
+export OMP_NUM_THREADS="$QUOTA"
+export OPENBLAS_NUM_THREADS="$QUOTA"
+export MKL_NUM_THREADS="$QUOTA"
+export NUMEXPR_NUM_THREADS="$QUOTA"
+export NUMBA_NUM_THREADS="$QUOTA"
+export MAKEFLAGS="-j${QUOTA}"
+
+if [ ! -d .venv ]; then
+  "${THROTTLE[@]}" python3 -m venv .venv
+  "${THROTTLE[@]}" .venv/bin/pip install --quiet --upgrade pip
+fi
+
+# Reinstall only when pyproject.toml has changed. The marker lives in
+# .venv, which is excluded from rsync, so it survives every sync.
+DEPS_STAMP=".venv/.deps-sha256"
+DEPS_WANT="$(sha256sum pyproject.toml | cut -d " " -f 1)"
+if [ ! -f "$DEPS_STAMP" ] || [ "$(cat "$DEPS_STAMP")" != "$DEPS_WANT" ]; then
+  "${THROTTLE[@]}" .venv/bin/pip install --quiet -e '.[dev]'
+  printf '%s\n' "$DEPS_WANT" > "$DEPS_STAMP"
+fi
+
+# ffmpeg is not installed system-wide and must not be installed there - the
+# machine is production. We take a static binary from the imageio-ffmpeg
+# package and pass it on via ORIGIN_FFMPEG plus a symlink named "ffmpeg" in
+# PATH, so yt-dlp and audioread can find it too.
+ORIGIN_FFMPEG="$("${THROTTLE[@]}" .venv/bin/python -c 'import imageio_ffmpeg; print(imageio_ffmpeg.get_ffmpeg_exe())')"
+export ORIGIN_FFMPEG
+mkdir -p .venv/ffmpeg-shim
+ln -sf "$ORIGIN_FFMPEG" .venv/ffmpeg-shim/ffmpeg
+export PATH="$DIR/.venv/ffmpeg-shim:$PATH"
+
+exec "${THROTTLE[@]}" .venv/bin/python -m pytest "$@"
+REMOTE_SCRIPT

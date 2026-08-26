@@ -1,0 +1,101 @@
+# Production overlay (Hetzner, behind shared Caddy). Server runbook section 7,
+# steps 1-3.
+#
+# Deployment on the server ALWAYS goes through git, never via manually copied
+# files:
+#   cd /var/www/grai-origin
+#   git pull
+#   docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build
+#
+# What changes relative to the base stack:
+#  - zero ports on the host: Caddy reaches the containers by name via Docker
+#    DNS on the shared external network ${CADDY_NETWORK};
+#  - fixed container names, since those are what the Caddy entry references;
+#  - CORS narrowed to the public host (front and API are the same origin
+#    anyway, so the browser doesn't need consent for anything more here).
+#
+# The cpus limit is inherited from docker-compose.yml. The API's memory limit
+# is NOT: the base stack runs in mock mode, where nothing heavier than FastAPI
+# is ever resident, while here the real models are.
+services:
+  api:
+    container_name: grai-origin-api
+    ports: !override []
+    networks: [default, caddy]
+    # Measured on the first full run with the heavy models (docs/full-run.md),
+    # as VmHWM of the uvicorn process:
+    #   started, before any model      126 MiB
+    #   whisper + basic-pitch          963 MiB
+    #   plus the embedding model      1.70 GiB
+    #   whisper + demucs resident     1812 MiB
+    #   one process, all four models  1975 MiB   <- the floor
+    # The base stack's 1280m does not hold: the process is past it before
+    # demucs is loaded at all, and demucs is the branch the confidence gate
+    # takes on any vocal harder than the one measured. All three models sit in
+    # an lru_cache(maxsize=1) for the life of the process, so this is a floor
+    # that never comes back down, not a transient peak. 2560m leaves about 30%
+    # over that floor for the audio buffers of a run in flight;
+    # mem_reservation states the floor itself, so the scheduler knows this
+    # container is not a small one.
+    mem_limit: 2560m
+    mem_reservation: 2048m
+    build:
+      args:
+        EXTRAS: heavy
+    environment:
+      # The public host runs the real engine. The base stack defaults to the
+      # mock for local work; production must say so explicitly.
+      ORIGIN_MOCK: "0"
+      ORIGIN_CORS: "https://grai-origin.agentshub.pl"
+      # Directory with candidate audio. The files are not in the image (data/
+      # is in .dockerignore), since they belong to someone else - they arrive
+      # via a read-only mount.
+      ORIGIN_AUDIO_ROOT: /home/origin/data/audio
+    volumes:
+      - ./data/audio:/home/origin/data/audio:ro
+    restart: unless-stopped
+
+  web:
+    container_name: grai-origin-web
+    ports: !override []
+    networks: [default, caddy]
+    restart: unless-stopped
+
+networks:
+  caddy:
+    external: true
+    name: ${CADDY_NETWORK:?set CADDY_NETWORK to the shared reverse proxy network}
+
+# ---------------------------------------------------------------------------
+# Entry for the shared /var/www/caddy/Caddyfile (runbook section 5).
+# FastAPI routers already carry the /api prefix themselves, so we pass the
+# path through unchanged: `handle`, never `handle_path`.
+#
+#   grai-origin.agentshub.pl {
+#       # Compress everything EXCEPT the SSE stream. `encode` buffers the
+#       # response body into compression blocks, which defeats the effect of
+#       # flush_interval -1 and the whole run arrives as one chunk at the end.
+#       @notstream not path /api/jobs/*/stream
+#       encode @notstream zstd gzip
+#
+#       # The analysis event stream. Without flush_interval -1 Caddy buffers
+#       # the response and the preliminary verdict arrives together with the
+#       # final one, i.e. the whole feature of the product is lost along the
+#       # way. This block MUST sit before `handle /api/*`: Caddy takes the
+#       # first matching handle, so the general rule would swallow the stream
+#       # path and let it through without the forced buffer flush.
+#       handle /api/jobs/*/stream {
+#           reverse_proxy grai-origin-api:8000 {
+#               flush_interval -1
+#           }
+#       }
+#
+#       handle /api/* {
+#           reverse_proxy grai-origin-api:8000
+#       }
+#
+#       handle {
+#           reverse_proxy grai-origin-web:3000
+#       }
+#   }
+# ---------------------------------------------------------------------------

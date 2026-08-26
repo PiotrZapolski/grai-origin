@@ -1,0 +1,45 @@
+#!/usr/bin/env bash
+# Installs the heavy models into the venv on the test machine. NEVER locally.
+#
+# Three steps rather than one `pip install -e '.[dev,heavy]'`, and each of them
+# exists for a reason that pip cannot express on its own:
+#
+# 1. torch comes from the PyTorch CPU index. The default PyPI wheel for
+#    linux-x86_64 is the CUDA build: several gigabytes of nvidia-* packages for
+#    a machine that has no GPU. demucs pulls torch in, so torch has to be
+#    present BEFORE demucs is resolved, otherwise the CUDA build wins.
+# 2. the project with its dev and heavy groups.
+# 3. basic-pitch with --no-deps. basic-pitch declares tensorflow<2.15.1 as a
+#    core dependency (not as an extra) for every non-Darwin platform on Python
+#    >= 3.11, and no such tensorflow wheel exists for 3.12, so the group is
+#    unresolvable with basic-pitch inside it. The ONNX weights ship inside the
+#    basic-pitch wheel itself and basic_pitch/__init__.py falls back to the
+#    onnx runtime when tensorflow is absent, so --no-deps gives a working
+#    inference path. Everything it imports at inference time is in the heavy
+#    group in pyproject.toml.
+set -euo pipefail
+
+REMOTE="${ORIGIN_REMOTE:?set ORIGIN_REMOTE to your ssh host alias}"
+REMOTE_DIR="${ORIGIN_REMOTE_DIR:-/opt/grai-origin}"
+QUOTA="${ORIGIN_CPU_QUOTA:-4}"
+
+cd "$(dirname "$0")/.."
+ssh "${REMOTE}" "mkdir -p '${REMOTE_DIR}'"
+rsync -az --exclude-from=.rsyncignore ./ "${REMOTE}:${REMOTE_DIR}/"
+
+ssh "${REMOTE}" bash -s -- "${REMOTE_DIR}" "${QUOTA}" <<'REMOTE_SCRIPT'
+set -euo pipefail
+DIR="$1"; QUOTA="$2"
+cd "$DIR"
+
+# The machine is shared production. The quota applies to the install too:
+# building and unpacking torch takes minutes of full CPU otherwise.
+LAST_CPU=$((QUOTA - 1))
+THROTTLE=(nice -n 19 taskset -c "0-${LAST_CPU}")
+export OMP_NUM_THREADS="$QUOTA" OPENBLAS_NUM_THREADS="$QUOTA" MKL_NUM_THREADS="$QUOTA"
+export NUMEXPR_NUM_THREADS="$QUOTA" NUMBA_NUM_THREADS="$QUOTA" MAKEFLAGS="-j${QUOTA}"
+
+"${THROTTLE[@]}" .venv/bin/pip install --index-url https://download.pytorch.org/whl/cpu torch torchaudio
+"${THROTTLE[@]}" .venv/bin/pip install -e '.[dev,heavy]'
+"${THROTTLE[@]}" .venv/bin/pip install --no-deps basic-pitch
+REMOTE_SCRIPT

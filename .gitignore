@@ -1,0 +1,45 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+.pytest_cache/
+*.egg-info/
+
+# Node
+node_modules/
+.next/
+dist/
+
+# Secrets
+.env
+.env.*
+!.env.example
+
+# DATA - none of this goes into the public repo.
+# SecondHandSongs directory dumps, audio, and song lyrics belong to someone else.
+data/*
+!data/candidates/
+!data/candidates/*.json
+data/audio/
+data/cache/
+data/lyrics/
+data/corpus/
+data/calibration/
+*.wav
+*.mp3
+*.m4a
+*.flac
+*.csv
+*.csv.zip
+
+# Models and artifacts
+models/
+*.pkl
+*.joblib
+
+# Workspace subagent-driven development
+.superpowers/
+
+# System
+.DS_Store

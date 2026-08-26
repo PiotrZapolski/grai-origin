@@ -1,0 +1,102 @@
+#!/usr/bin/env bash
+# Runs the frontend tests (vitest) on Hetzner. NEVER locally - see
+# Global Constraints point 1. The web/ layer equivalent of ./scripts/rt.
+# Usage: ./scripts/rt-web                        (all tests)
+#        ./scripts/rt-web web/tests/theme.test.ts (single file)
+set -euo pipefail
+
+REMOTE="${ORIGIN_REMOTE:?set ORIGIN_REMOTE to your ssh host alias}"
+REMOTE_DIR="${ORIGIN_REMOTE_DIR:-/opt/grai-origin}"
+QUOTA="${ORIGIN_CPU_QUOTA:-4}"
+NODE_LTS="${ORIGIN_NODE_LTS:---lts}"
+
+cd "$(dirname "$0")/.."
+
+ssh "${REMOTE}" "mkdir -p '${REMOTE_DIR}'"
+# .nvm/ lives in .rsyncignore, so ./scripts/rt protects it too. Without this
+# a concurrent backend test run would wipe the remote node install halfway
+# through our work - that's how the first attempt ended.
+rsync -az --delete --exclude-from=.rsyncignore ./ "${REMOTE}:${REMOTE_DIR}/"
+
+ssh "${REMOTE}" bash -s -- "${REMOTE_DIR}" "${QUOTA}" "${NODE_LTS}" "$@" <<'REMOTE_SCRIPT'
+set -euo pipefail
+DIR="$1"; QUOTA="$2"; NODE_LTS="$3"; shift 3
+cd "$DIR"
+
+# The quota applies to EVERYTHING we run on this machine: the node install
+# via nvm, npm package installs, and the test run itself. This host runs 84
+# production containers, so nothing is allowed to spill past its allotted
+# cores.
+LAST_CPU=$((QUOTA - 1))
+THROTTLE=(nice -n 19 taskset -c "0-${LAST_CPU}")
+
+export MAKEFLAGS="-j${QUOTA}"
+export UV_THREADPOOL_SIZE="$QUOTA"
+export npm_config_jobs="$QUOTA"
+export npm_config_fund=false
+export npm_config_audit=false
+export npm_config_update_notifier=false
+
+# Node is not installed system-wide and must not be installed via apt - the
+# machine is production. We keep our own copy under ${DIR}/.nvm, which is
+# excluded from rsync, so it survives every sync.
+export NVM_DIR="$DIR/.nvm"
+if [ ! -s "$NVM_DIR/nvm.sh" ]; then
+  mkdir -p "$NVM_DIR"
+  "${THROTTLE[@]}" curl -fsSL -o "$NVM_DIR/install.sh" \
+    https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.3/install.sh
+  # PROFILE=/dev/null - the installer does not append itself to any .bashrc on the host.
+  "${THROTTLE[@]}" env NVM_DIR="$NVM_DIR" PROFILE=/dev/null METHOD=script \
+    bash "$NVM_DIR/install.sh" >/dev/null
+fi
+
+# Paths given from the repo root (web/tests/x.test.ts) are translated into
+# paths relative to web/, since vitest already starts inside that directory.
+# We do this now, before we clear the positional parameters.
+ARGS=()
+for a in "$@"; do ARGS+=("${a#web/}"); done
+
+# nvm.sh reads the positional parameters of the shell that sources it and
+# tries to interpret them as its own options. Without clearing $@ the test
+# file name kills the script's run without a word of explanation.
+set --
+
+# The whole nvm block runs without errexit and without nounset. nvm.sh is
+# not written for these modes: it reaches for undefined variables, which
+# under "set -u" kills the shell silently, since the message goes to
+# stderr and gets swallowed by the redirect.
+set +eu
+# shellcheck source=/dev/null
+. "$NVM_DIR/nvm.sh" --no-use
+
+# nvm is a shell function, so it cannot be prefixed with nice/taskset
+# directly. Only the download and unpacking of node itself runs throttled,
+# inside a subshell.
+# The -b flag forbids compiling from source: this host runs production, and
+# building node would hog the CPU for a quarter of an hour.
+nvm use "$NODE_LTS" >/dev/null 2>&1
+if [ $? -ne 0 ]; then
+  "${THROTTLE[@]}" bash -c 'set +eu; . "$NVM_DIR/nvm.sh" --no-use; nvm install -b "$1"' _ "$NODE_LTS"
+  nvm use "$NODE_LTS" >/dev/null 2>&1
+fi
+NODE_BIN="$(command -v node || true)"
+set -eu
+
+if [ -z "$NODE_BIN" ]; then
+  echo "rt-web: failed to start node ${NODE_LTS} from ${NVM_DIR}" >&2
+  exit 1
+fi
+
+cd "$DIR/web"
+
+# Reinstall only when package.json has changed. The marker lives in
+# node_modules, which is excluded from rsync, so it survives the sync.
+DEPS_STAMP="node_modules/.deps-sha256"
+DEPS_WANT="$(sha256sum package.json | cut -d " " -f 1)"
+if [ ! -f "$DEPS_STAMP" ] || [ "$(cat "$DEPS_STAMP")" != "$DEPS_WANT" ]; then
+  "${THROTTLE[@]}" npm install --loglevel=error
+  printf '%s\n' "$DEPS_WANT" > "$DEPS_STAMP"
+fi
+
+exec "${THROTTLE[@]}" node_modules/.bin/vitest run ${ARGS[@]+"${ARGS[@]}"}
+REMOTE_SCRIPT
